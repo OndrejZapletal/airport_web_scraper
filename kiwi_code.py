@@ -2,17 +2,21 @@
 
 """Solution of kiwi code challenge"""
 
+from urllib import parse
+from threading import Thread
+# from http.client import HTTPConnection
+# import http.client.HTTPConnection
+import sys
+from queue import Queue
 import csv
 import re
-
 from urllib.request import Request, urlopen, URLError
 from bs4 import BeautifulSoup
-
-import ipdb
 
 ADDRESS = "https://www.world-airport-codes.com/"
 COUNTRY_RE = re.compile(r".+\((\w\w)\).*")
 
+concurrent = 200
 
 def compose_request(airport_key):
     """compose string for search request"""
@@ -40,7 +44,6 @@ def parse_country_code(response):
 
 def get_dictionary_of_airports(list_of_airports):
     """Creates dictionary containg 'airport code' : 'country' pairs."""
-    airport_countries = {}
     for airport in list_of_airports:
         try:
             airport_countries[airport] = get_airport_country(airport)
@@ -50,10 +53,11 @@ def get_dictionary_of_airports(list_of_airports):
     return airport_countries
 
 
-
 def main():
     """main function"""
     list_of_airports = []
+    airport_countries = {}
+    q = Queue(concurrent * 2)
 
     with open("input_data_short.csv", 'r') as csvfile:
         flights_reader = csv.reader(csvfile, delimiter=";")
@@ -74,7 +78,39 @@ def main():
     with open("airport_names.txt", "w") as airports_file:
         airports_file.write(airport_list_text)
 
-    # print("number of airports: %s" % len(list_of_airports))
+
+    for airport in list_of_airports:
+        t = Thread(target=doWork, args=(airport))
+        t.daemon = True
+        t.start()
+
+    try:
+        for url in open('urllist.txt'):
+            q.put(url.strip())
+        q.join()
+    except KeyboardInterrupt:
+        sys.exit(1)
+
+
+def doWork(airport):
+    while True:
+        url = q.get()
+        status, url = getStatus(url, airport)
+        doSomethingWithResult(status, url)
+        q.task_done()
+
+def getStatus(ourl, airport):
+    try:
+        url = parse(ourl)
+        conn = HTTPConnection(url.netloc)
+        conn.request("HEAD", url.path)
+        res = conn.getresponse()
+        return res.status, ourl
+    except:
+        return "error", ourl
+
+def doSomethingWithResult(status, url):
+    print(status, url)
 
 
 # if __name__ == "__main__":
