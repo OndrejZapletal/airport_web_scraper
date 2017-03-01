@@ -2,12 +2,7 @@
 
 """Solution of kiwi code challenge"""
 
-from urllib import parse
-from threading import Thread
-# from http.client import HTTPConnection
-# import http.client.HTTPConnection
-import sys
-from queue import Queue
+from threading import Thread, Lock, RLock
 import csv
 import re
 from urllib.request import Request, urlopen, URLError
@@ -16,7 +11,6 @@ from bs4 import BeautifulSoup
 ADDRESS = "https://www.world-airport-codes.com/"
 COUNTRY_RE = re.compile(r".+\((\w\w)\).*")
 
-concurrent = 200
 
 def compose_request(airport_key):
     """compose string for search request"""
@@ -28,9 +22,13 @@ def compose_request(airport_key):
 
 def get_airport_country(airport_key):
     """Fetch airport info from www.world-airport-codes.com."""
+    print("get airport country for: %s", airport_key)
     req = Request(compose_request(airport_key), headers={'User-Agent' : "kiwi project"})
     response = urlopen(req)
-    return parse_country_code(response.read())
+    country_code = parse_country_code(response.read())
+    with lock:
+        dictionary_of_airports[airport_key] = country_code
+    print(country_code)
 
 
 def parse_country_code(response):
@@ -44,21 +42,22 @@ def parse_country_code(response):
 
 def get_dictionary_of_airports(list_of_airports):
     """Creates dictionary containg 'airport code' : 'country' pairs."""
+    threads = []
+
     for airport in list_of_airports:
-        try:
-            airport_countries[airport] = get_airport_country(airport)
-        except URLError as error:
-            print("Request error: %s" % error)
+        threads.append(Thread(target=get_airport_country, args=(airport,)))
 
-    return airport_countries
+    for thread in threads:
+        thread.daemon = True
+        thread.start()
+
+    for thread in threads:
+        thread.join()
 
 
-def main():
-    """main function"""
+def get_list_of_airports():
+    """get list of airports from input data file."""
     list_of_airports = []
-    airport_countries = {}
-    q = Queue(concurrent * 2)
-
     with open("input_data_short.csv", 'r') as csvfile:
         flights_reader = csv.reader(csvfile, delimiter=";")
         # ipdb.set_trace(context=10)
@@ -69,50 +68,26 @@ def main():
 
             if row[1] not in list_of_airports:
                 list_of_airports.append(row[1])
+    return list_of_airports
+
+
+def main():
+    """main function"""
+    airports = get_list_of_airports()
+    get_dictionary_of_airports(airports)
+    airport_countries = dictionary_of_airports
+    print(airport_countries)
 
     airport_list_text = ""
-
-    for airport, country in get_dictionary_of_airports(list_of_airports).items():
+    for airport, country in airport_countries.items():
         airport_list_text += "%s:%s\n" % (airport, country)
 
     with open("airport_names.txt", "w") as airports_file:
         airports_file.write(airport_list_text)
 
 
-    for airport in list_of_airports:
-        t = Thread(target=doWork, args=(airport))
-        t.daemon = True
-        t.start()
-
-    try:
-        for url in open('urllist.txt'):
-            q.put(url.strip())
-        q.join()
-    except KeyboardInterrupt:
-        sys.exit(1)
-
-
-def doWork(airport):
-    while True:
-        url = q.get()
-        status, url = getStatus(url, airport)
-        doSomethingWithResult(status, url)
-        q.task_done()
-
-def getStatus(ourl, airport):
-    try:
-        url = parse(ourl)
-        conn = HTTPConnection(url.netloc)
-        conn.request("HEAD", url.path)
-        res = conn.getresponse()
-        return res.status, ourl
-    except:
-        return "error", ourl
-
-def doSomethingWithResult(status, url):
-    print(status, url)
-
-
+lock = RLock()
+dictionary_of_airports = {}
 # if __name__ == "__main__":
 #     main()
 
