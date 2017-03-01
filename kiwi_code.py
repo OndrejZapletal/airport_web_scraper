@@ -30,7 +30,7 @@ def get_airport_country(airport_key):
             with lock:
                 dictionary_of_airports[airport_key] = country_code
         else:
-            print("Airport key: %s not found" % airport_key)
+            print("Counld not find country for '%s' airport" % airport_key)
     except URLError as error:
         print("Error: %s" % error)
 
