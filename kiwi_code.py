@@ -3,7 +3,9 @@
 """Solution of kiwi code challenge"""
 
 from threading import Thread, RLock
+from queue import Queue
 import csv
+import sys
 import re
 from urllib.request import Request, urlopen, URLError
 from bs4 import BeautifulSoup
@@ -50,25 +52,32 @@ def parse_country_code(response):
     return code
 
 
-def get_dictionary_of_airports(list_of_airports):
+def get_dictionary_of_airports(list_of_airports, multithreded):
     """Creates dictionary containg 'airport code' : 'country' pairs."""
-    threads = []
+    if multithreded:
+        print("Starting multithreaded version")
+        threads = []
 
-    for airport in list_of_airports:
-        threads.append(Thread(target=get_airport_country, args=(airport,)))
+        for airport in list_of_airports:
+            threads.append(Thread(target=get_airport_country, args=(airport,)))
 
-    for thread in threads:
-        thread.daemon = True
-        thread.start()
+        for thread in threads:
+            thread.daemon = True
+            thread.start()
 
-    for thread in threads:
-        thread.join()
+        for thread in threads:
+            thread.join()
+    else:
+        print("Starting single thread version")
+        for airport in list_of_airports:
+            get_airport_country(airport)
+
 
 
 def get_list_of_airports():
     """get list of airports from input data file."""
     list_of_airports = []
-    with open("input_data_short.csv", 'r') as csvfile:
+    with open("input_data.csv", 'r') as csvfile:
         flights_reader = csv.reader(csvfile, delimiter=";")
         # ipdb.set_trace(context=10)
         next(flights_reader, None) # skip header
@@ -83,12 +92,17 @@ def get_list_of_airports():
 
 def main():
     """main function"""
+    multithreaded = True
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "1":
+            multithreaded = False
+
     airports = get_list_of_airports()
-    get_dictionary_of_airports(airports)
-    airport_countries = dictionary_of_airports
+    print("Gathering information about %s airports" % len(airports))
+    get_dictionary_of_airports(airports, multithreaded)
 
     airport_list_text = ""
-    for airport, country in airport_countries.items():
+    for airport, country in dictionary_of_airports.items():
         airport_list_text += "%s:%s\n" % (airport, country)
 
     with open("airport_names.txt", "w") as airports_file:
