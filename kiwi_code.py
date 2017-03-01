@@ -2,7 +2,7 @@
 
 """Solution of kiwi code challenge"""
 
-from threading import Thread, Lock, RLock
+from threading import Thread, RLock
 import csv
 import re
 from urllib.request import Request, urlopen, URLError
@@ -22,13 +22,18 @@ def compose_request(airport_key):
 
 def get_airport_country(airport_key):
     """Fetch airport info from www.world-airport-codes.com."""
-    print("get airport country for: %s", airport_key)
-    req = Request(compose_request(airport_key), headers={'User-Agent' : "kiwi project"})
-    response = urlopen(req)
-    country_code = parse_country_code(response.read())
-    with lock:
-        dictionary_of_airports[airport_key] = country_code
-    print(country_code)
+    try:
+        req = Request(compose_request(airport_key), headers={'User-Agent' : "kiwi project"})
+        response = urlopen(req)
+        country_code = parse_country_code(response.read())
+        if country_code:
+            with lock:
+                dictionary_of_airports[airport_key] = country_code
+        else:
+            print("Airport key: %s not found" % airport_key)
+    except URLError as error:
+        print("Error: %s" % error)
+
 
 
 def parse_country_code(response):
@@ -36,8 +41,13 @@ def parse_country_code(response):
     soup = BeautifulSoup(response, "html.parser")
     result = str(soup.find_all("div", "header clearfix")[0])
     soup = BeautifulSoup(result, "html.parser")
-    result = soup.find("p").contents[0][1:-1]
-    return str(COUNTRY_RE.match(result).group(1))
+    result = str(soup.find("p").contents[0][1:-1])
+    try:
+        code = COUNTRY_RE.match(result).group(1)
+    except AttributeError:
+        print("result: %s" % result)
+        code = None
+    return code
 
 
 def get_dictionary_of_airports(list_of_airports):
@@ -76,7 +86,6 @@ def main():
     airports = get_list_of_airports()
     get_dictionary_of_airports(airports)
     airport_countries = dictionary_of_airports
-    print(airport_countries)
 
     airport_list_text = ""
     for airport, country in airport_countries.items():
