@@ -72,11 +72,11 @@ class ThreadPool:
         self.tasks.join()
 
 
-class FlightTree(object):
-    pass
-
-
 def construct_flight_data(values):
+    """
+    Keyword Arguments:
+    values --
+    """
     return FlightTuple(
         from_airport=values[0],
         from_country=dictionary_of_airports[values[0]],
@@ -87,6 +87,7 @@ def construct_flight_data(values):
 
 
 def return_flight_data(flight_data):
+    """format flight data into readable format."""
     return "{};{};{};{};{}".format(
         flight_data.from_country,
         flight_data.from_airport,
@@ -98,7 +99,9 @@ def return_flight_data(flight_data):
 def main(size_of_pool):
     """main function"""
     airports = get_list_of_airports()
+
     print("Gathering information about %s airports" % len(airports))
+
     if not os.path.isfile("airport_names.txt"):
         get_dictionary_of_airports(airports, size_of_pool)
 
@@ -116,7 +119,9 @@ def main(size_of_pool):
 
     flights = sorted(get_list_of_flights(), key=operator.attrgetter('from_date'))
 
-    analyze_routes(flights)
+    journeys = analyze_routes(flights)
+    # for journey in journeys:
+    #     print(journey)
 
 
 
@@ -125,42 +130,63 @@ def analyze_routes(flights):
     possible_journeys = []
 
     for flight in flights:
-        journey = find_route(flight, flights, 1, flight.from_country)
-        if journey:
-            possible_journeys.append(journey)
+        journey = [flight]
+        possible_journeys.append(journey)
+        find_route(possible_journeys, journey, flights)
+    return possible_journeys
 
 
-def find_route(flight, list_of_flights, flight_index, origin):
+def find_route(possible_journeys, journey, list_of_flights):
     """investigate one potential route"""
-    result = validate_journey(list_of_flights, flight_index, origin)
-    if result:
-        return result
+    if not valid_journey(possible_journeys, journey, list_of_flights):
+        for candidate in filter_candidates(journey, list_of_flights):
+            candidat_journey = extend_journey(journey, candidate)
+            possible_journeys.append(candidat_journey)
+            find_route(possible_journeys, candidat_journey, list_of_flights)
+
+
+def filter_candidates(journey, list_of_flights):
+    """List of all possible flights is filtered to only valid candidates.
+
+    selects only those flights that are departing from
+    the same country to which the last flight from the journey arrives.
+
+    Following that only flight candidates that are departing after arrival of last
+    flight in the journey.
+    """
+    candidats_by_country = [
+        candidate for candidate in list_of_flights
+        if candidate.from_country == journey[-1].to_country
+        and candidate.to_country != journey[-1].from_country]
+    candidates = [
+        candidate for candidate in candidats_by_country
+        if candidate.from_date > journey[-1].to_date]
+    return candidates
+
+
+def extend_journey(journey, candidate):
+    """creating new list from original list and appending candidate flight
+    """
+    next_journey = list(journey)
+    next_journey.append(candidate)
+    return next_journey
+
+
+def valid_journey(possible_journeys, journey, list_of_flights):
+    """Validates journey"""
+    if len(journey) < 1:
+        return False
     else:
-        candidats_by_country = [candidat for candidat in list_of_flights
-                                if candidat.from_country == flight.to_country
-                                and candidat.to_country != flight.from_country]
-        candidats = [candidat for candidat in candidats_by_country
-                     if candidat.from_date > flight.arfrom_date]
-        for candidat in candidats:
-            journey = find_route(candidat, list_of_flights, flight_index + 1, origin)
-
-    if journey:
-        return journey.insert(0, flight)
-    else:
-        return []
-
-    if candidats:
-        print("for flight '%s' : %s\n" %(flight, candidats))
-
-
-def validate_journey(list_of_flights, flight_index, origin):
-    if flight_index < 5:
-        return []
-    else:
-        candidats = [candidat for candidat in list_of_flights if candidat.to_country == origin]
-        return candidats
-
-
+        candidates = [
+            candidate for candidate in list_of_flights
+            if candidate.from_date > journey[-1].to_date]
+        for candidate in candidates:
+            if candidate.to_country == journey[0].from_country:
+                possible_journeys.append(extend_journey(journey, candidate))
+                print("")
+                for possible_journey in possible_journeys[-1]:
+                    print(return_flight_data(possible_journey))
+        return True
 
 
 def get_list_of_airports():
@@ -176,7 +202,6 @@ def get_list_of_airports():
             if row[1] not in list_of_airports: # destination airports
                 list_of_airports.append(row[1])
     return list_of_airports
-
 
 
 def get_list_of_flights():
