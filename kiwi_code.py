@@ -2,19 +2,21 @@
 
 """Solution of kiwi code challenge"""
 
-from threading import Thread, RLock
-from queue import Queue
 import csv
-import re
-import os
 import operator
+import os
 import random
+import re
 from collections import namedtuple
-from urllib.request import Request, urlopen, URLError
+from datetime import datetime, timedelta
+from queue import Queue
+from threading import RLock, Thread
 from time import sleep
-from datetime import datetime
-# from datetime import  timedelta
+from urllib.request import Request, URLError, urlopen
+
 from bs4 import BeautifulSoup
+from dateutil.relativedelta import relativedelta
+
 # import ipdb
 
 ADDRESS = "https://www.world-airport-codes.com/"
@@ -88,6 +90,12 @@ def construct_flight_data(values):
                        to_date=datetime.strptime(values[3], DT_INPUT_FORMAT))
 
 
+def filter_younger_then_year(journey, list_of_flights):
+    return [candidate for candidate in list_of_flights
+            if relativedelta(candidate.to_date - timedelta(days=1),
+                             journey[0].from_date).years < 1]
+
+
 def return_flight_data(flight_data):
     """format flight data into readable format."""
     return "{};{};{};{};{}".format(
@@ -98,8 +106,9 @@ def return_flight_data(flight_data):
         datetime.strftime(flight_data.to_date, DT_OUTPUT_FORMAT))
 
 
-def append_journeys_to_file(list_of_journeys):
-    with open("journeys.txt", "a") as file:
+def write_journeys_to_file(list_of_journeys):
+    """Write found journeys into file."""
+    with open("journeys.txt", "w") as file:
         for index, journey in enumerate(list_of_journeys):
             for flight in journey:
                 file.write("%s;%s\n" % (index+1, return_flight_data(flight)))
@@ -123,21 +132,39 @@ def analyze_routes(flights):
         print("%s, flight %s of %s " % (return_flight_data(flight), index+1, len(flights)))
         journey = list([flight])
         possible_journeys = find_route(journey, flights)
-        print("found %s journeys" % len(possible_journeys))
         all_possible_journeys += possible_journeys
-
-    append_journeys_to_file(all_possible_journeys)
+        print("found %s journeys" % len(possible_journeys))
+    write_journeys_to_file(all_possible_journeys)
     return all_possible_journeys
 
 
 def filter_candidates(journey, list_of_flights):
-    candidates_by_time = filter_by_time(journey, list_of_flights)
-    candidates_by_originality = filter_by_originality(journey, candidates_by_time)
-    candidates_by_country = filter_by_country(journey, candidates_by_originality)
+    """List of all possible flights is filtered to only valid candidates.
+
+    Only flight candidates that are departing after arrival of last flight in
+    the journey.
+
+    Only flights that arrive in country that was not visited on the journey yet.
+
+    selects only those flights that are departing from
+    the same country to which the last flight from the journey arrives.
+    """
+    candidates_by_time = [candidate for candidate in list_of_flights
+                          if candidate.from_date > journey[-1].to_date]
+
+    candidates_by_originality = [candidate for candidate in candidates_by_time
+                                 if candidate.to_country
+                                 not in [flight.from_country for flight in journey]]
+
+    candidates_by_country = [candidate for candidate in candidates_by_originality
+                             if candidate.from_country == journey[-1].to_country
+                             and candidate.to_country != journey[-1].from_country]
+    candidates_younger_then_year = filter_younger_then_year(journey, candidates_by_country)
+
     try:
-        candidates = random.sample(candidates_by_country, NUMBER_OF_CANDIDATES_PER_SEARCH)
+        candidates = random.sample(candidates_younger_then_year, NUMBER_OF_CANDIDATES_PER_SEARCH)
     except ValueError:
-        candidates = candidates_by_country
+        candidates = candidates_younger_then_year
 
     return candidates
 
@@ -154,14 +181,33 @@ def find_route(journey, list_of_flights):
 
 
 def validate_journey(journey, list_of_flights):
-    """Validates journey"""
+    """
+
+    Only flight candidates that are departing after arrival of last flight in
+    the journey.
+
+    selects only those flights that are departing from the same country to
+    which the last flight from the journey arrives.
+
+    Only flights that arrive in country that was not visited on the journey yet.
+
+    Only flights that arrive in country from which the journey begun.
+    """
     journeys = []
 
-    candidates_by_time = filter_by_time(journey, list_of_flights)
-    candidates_by_country = filter_by_country(journey, candidates_by_time)
-    candidates_valid = filter_by_valid_circle(journey, candidates_by_country)
+    candidates_by_time = [candidate for candidate in list_of_flights
+                          if candidate.from_date > journey[-1].to_date]
 
-    for candidate in candidates_valid:
+    candidates_by_country = [candidate for candidate in candidates_by_time
+                             if candidate.from_country == journey[-1].to_country
+                             and candidate.to_country != journey[-1].from_country]
+
+    candidates_valid = [candidate for candidate in candidates_by_country
+                        if candidate.to_country == journey[0].from_country]
+
+    candidates_younger_then_year = filter_younger_then_year(journey, candidates_valid)
+
+    for candidate in candidates_younger_then_year:
         journeys.append(extend_journey(journey, candidate))
 
     return journeys
@@ -175,57 +221,12 @@ def extend_journey(journey, candidate):
     return next_journey
 
 
-def filter_by_country(journey, flights):
-    """List of all possible flights is filtered to only valid candidates.
-
-    selects only those flights that are departing from
-    the same country to which the last flight from the journey arrives.
-    """
-    flight_to_country = journey[-1].to_country
-    flight_from_country = journey[-1].from_country
-    return [candidate for candidate in flights
-            if candidate.from_country == flight_to_country
-            and candidate.to_country != flight_from_country]
-
-
-def filter_by_time(journey, flights):
-    """List of all possible flights is filtered to only valid candidates.
-
-    Only flight candidates that are departing after arrival of last
-    flight in the journey.
-    """
-    flight_arrival = journey[-1].to_date
-    return [candidate for candidate in flights
-            if candidate.from_date > flight_arrival]
-
-
-def filter_by_originality(journey, flights):
-    """List of all possible flights is filtered to only valid candidates.
-
-    Only flights that arrive in country that was not visited on the journey yet.
-    """
-    return [candidate for candidate in flights
-            if candidate.to_country
-            not in [flight.from_country for flight in journey]]
-
-
 def filter_by_journey_time(journey, flights):
-    """List of all possible flights is filtered to only valid candidates.
-
-    Only the flights that arrive sooner then 1 year and 24 hours
+    """ TODO: Only the flights that arrive sooner then 1 year and 24 hours
     after the journey begun.
     """
     return [candidate for candidate in flights
             if candidate.to_date == journey[0].from_date]
-
-
-def filter_by_valid_circle(journey, flights):
-    """List of all possible flights is filtered to only valid candidates.
-
-    Only flights that arrive in country from which the journey begun.
-    """
-    return [candidate for candidate in flights
-            if candidate.to_country == journey[0].from_country]
 
 
 def get_list_of_airports():
@@ -311,7 +312,7 @@ def compose_request(airport):
     """compose string for search request"""
     if len(airport) != 3:
         raise Exception("Airport key '%s' is not valid" % airport)
-    return f"{ADDRESS}search/?s={airport.lower()}"
+    return "{}search/?s={}".format(ADDRESS, airport.lower())
 
 
 def parse_country_code(response, airport):
@@ -357,5 +358,5 @@ def main(size_of_pool):
 lock = RLock()
 dictionary_of_airports = {}
 
-if __name__ == "__main__":
-    main(50)
+# if __name__ == "__main__":
+main(50)
