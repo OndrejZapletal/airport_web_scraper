@@ -8,10 +8,8 @@ import os
 # import random
 import re
 from collections import namedtuple
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timedelta
-from queue import Queue
-from threading import RLock, Thread
 from time import sleep
 from urllib.request import Request, URLError, urlopen
 
@@ -22,11 +20,14 @@ ADDRESS = "https://www.world-airport-codes.com/"
 COUNTRY_RE = re.compile(r".+\((\w\w)\).*")
 DT_INPUT_FORMAT = "%Y-%m-%d %H:%M:%S"
 DT_OUTPUT_FORMAT = "%Y-%m-%dT%H:%M"
-CSV_INPUT = "input_data.csv"
+CSV_INPUT_FILE = "input_data.csv"
+AIRPORT_LIST_FILE = "airport_list.txt"
+VALID_JOURNEYS_FILE = "valid_journeys.csv"
 NUMBER_OF_CANDIDATES_PER_SEARCH = 4
 NUMBER_OF_RETRIES = 5
 NUMBER_OF_JOURNEY_STARTS = 1000
 LENGTH_OF_COMPLETE_JOURNEY = 10
+SIZE_OF_POOL = 50
 
 FlightTuple = namedtuple("FlightTuple",
                          ['from_airport',
@@ -36,49 +37,8 @@ FlightTuple = namedtuple("FlightTuple",
                           'to_country',
                           'to_date'])
 
-class Worker(Thread):
-    """ Thread executing tasks from a given tasks queue """
-    def __init__(self, tasks):
-        Thread.__init__(self)
-        self.tasks = tasks
-        self.daemon = True
-        self.start()
 
-    def run(self):
-        while True:
-            func, args, kargs = self.tasks.get()
-            try:
-                func(*args, **kargs)
-            except Exception as error:
-                # An exception happened in this thread
-                print("Error during thread execution for airport '%s': %s" % (args, error))
-            finally:
-                # Mark this task as done, whether an exception happened or not
-                self.tasks.task_done()
-
-
-class ThreadPool(object):
-    """ Pool of threads consuming tasks from a queue """
-    def __init__(self, num_threads):
-        self.tasks = Queue(num_threads)
-        for _ in range(num_threads):
-            Worker(self.tasks)
-
-    def add_task(self, func, *args, **kargs):
-        """ Add a task to the queue """
-        self.tasks.put((func, args, kargs))
-
-    def map(self, func, args_list):
-        """ Add a list of tasks to the queue """
-        for args in args_list:
-            self.add_task(func, args)
-
-    def wait_completion(self):
-        """ Wait for completion of all the tasks in the queue """
-        self.tasks.join()
-
-
-def construct_flight_data(values):
+def construct_flight_data(values, dictionary_of_airports):
     """Fill namedtuple from line of CSV files."""
     return FlightTuple(from_airport=values[0],
                        from_country=dictionary_of_airports[values[0]],
@@ -124,28 +84,30 @@ def get_local_date_time(datetime_input, country):
 
 def write_journeys_to_file(list_of_journeys):
     """Write found journeys into file."""
-    with open("journeys.txt", "w") as file:
-        for index, journey in enumerate(list_of_journeys):
-            for flight in journey:
-                file.write("%s;%s\n" % (index+1, return_flight_data(flight)))
+    with open(VALID_JOURNEYS_FILE, "w") as file:
+        file.write(format_jouerneys_data(list_of_journeys))
+
+
+def format_jouerneys_data(list_of_journeys):
+    """Create string containing all journeys data in printable format."""
+    journeys_data = ""
+    for index, journey in enumerate(list_of_journeys):
+        for flight in journey:
+            journeys_data += "%s;%s\n" % (index+1, return_flight_data(flight))
+    return journeys_data
 
 
 def analyze_routes(flights):
     """analyze possible routes"""
-    possible_journeys = []
-    # select only smaller number of starting flights
-    # for index, flight in enumerate(random.sample(flights, NUMBER_OF_JOURNEY_STARTS)):
-    #     print("%s flight of %s" % (index+1, NUMBER_OF_JOURNEY_STARTS))
-    #     journey = list([flight])
-    #     possible_journeys += find_route((journey, flights))
 
     # Creation of these lists is little bit convoluted by it is necessary for
-    # serialization for ProcessPoolExecutor
+    # serialization for ProcessPoolExecutor.
     flights = down_sample(flights, NUMBER_OF_JOURNEY_STARTS)
     journeys = [list([flight]) for flight in flights]
     flights_list = [flights for i in range(len(flights))]
     args = list(zip(journeys, flights_list))
 
+    possible_journeys = []
     with  ProcessPoolExecutor() as executor:
         possible_journeys = list(executor.map(find_route, args))
 
@@ -228,7 +190,7 @@ def down_sample(list_input, k):
 def get_list_of_airports():
     """get list of airports from input data file."""
     list_of_airports = []
-    with open(CSV_INPUT, 'r') as csv_file:
+    with open(CSV_INPUT_FILE, 'r') as csv_file:
         flights_reader = csv.reader(csv_file, delimiter=";")
         next(flights_reader, None)  # skip header
         for row in flights_reader:
@@ -240,43 +202,48 @@ def get_list_of_airports():
     return list_of_airports
 
 
-def get_list_of_flights():
+def get_list_of_flights(dictionary_of_airports):
     """creates list of flights"""
     list_of_flights = []
-    with open(CSV_INPUT, 'r') as csv_file:
+    with open(CSV_INPUT_FILE, 'r') as csv_file:
         flights_reader = csv.reader(csv_file, delimiter=";")
         next(flights_reader, None)  # skip header
         for row in flights_reader:
             try:
-                list_of_flights.append(construct_flight_data(row))
+                list_of_flights.append(construct_flight_data(row, dictionary_of_airports))
             except KeyError:
                 pass
 
     return list_of_flights
 
 
-def get_dictionary_of_airports(list_of_airports, size_of_pool):
+def get_dictionary_of_airports(list_of_airports):
     """Creates dictionary containing 'airport code' : 'country' pairs.
 
     Because the scrapping from web takes a long time. The result is saved
     to file and read on the next try.
     """
     print("Gathering information about %s airports" % len(list_of_airports))
-    if not os.path.isfile("airport_names.txt"):
-        thread_pool = ThreadPool(size_of_pool)
-        thread_pool.map(get_airport_country, list_of_airports)
-        thread_pool.wait_completion()
-        airport_list_text = ""
-        for airport, country in dictionary_of_airports.items():
-            airport_list_text += "%s:%s\n" % (airport, country)
+    dictionary_of_airports = {}
+    # if there is no file with Airport countries
+    if not os.path.isfile(AIRPORT_LIST_FILE):
+        with ThreadPoolExecutor(max_workers=SIZE_OF_POOL) as thread_pool:
+            results = list(thread_pool.map(get_airport_country, list_of_airports))
+            airport_list_text = ""
+            for result in results:
+                if result:
+                    airport_list_text += "%s:%s\n" % (result[0], result[1])
+                    dictionary_of_airports[result[0]] = result[1]
 
-        with open("airport_names.txt", "w") as airports_file:
-            airports_file.write(airport_list_text)
+            with open(AIRPORT_LIST_FILE, "w") as airports_file:
+                airports_file.write(airport_list_text)
+    # when file with Airport countries already exists
     else:
-        with open("airport_names.txt", "r") as airports_file:
+        with open(AIRPORT_LIST_FILE, "r") as airports_file:
             for line in airports_file:
                 airport, country = line[:-1].split(":")
                 dictionary_of_airports[airport] = country
+    return dictionary_of_airports
 
 
 def get_airport_country(airport):
@@ -285,10 +252,10 @@ def get_airport_country(airport):
     response = send_request(req, airport)
     country_code = parse_country_code(response, airport)
     if country_code:
-        with lock:
-            dictionary_of_airports[airport] = country_code
+        return (airport, country_code)
     else:
         print("Couldn't find country for '%s' airport" % airport)
+        return None
 
 
 def send_request(req, airport):
@@ -343,32 +310,31 @@ def length_of_journey(journey):
     return journey[-1].to_date - journey[0].from_date
 
 
-def main(size_of_pool):
+def main():
     """main function"""
     airports = get_list_of_airports()
 
-    get_dictionary_of_airports(airports, size_of_pool)
+    airport_countries = get_dictionary_of_airports(airports)
 
-    flights = sorted(filter_out_invalid_flights(get_list_of_flights()),
+    flights = sorted(filter_out_invalid_flights(get_list_of_flights(airport_countries)),
                      key=operator.attrgetter('from_date'))
 
     results = analyze_routes(flights)
 
-    proper_journeys = []
-
+    journeys = []
     for list_of_journeys in results:
         if len(list_of_journeys) > 0:
             for journey in list_of_journeys:
-                proper_journeys.append(journey)
+                journeys.append(journey)
 
-    journeys = sorted(proper_journeys,
+    journeys = sorted(journeys,
                       key=length_of_journey)
 
     write_journeys_to_file(journeys)
 
+    # print first 100 journeys
+    print(format_jouerneys_data(journeys)[:100])
 
-lock = RLock()
-dictionary_of_airports = {}
 
-# if __name__ == "__main__":
-main(50)
+if __name__ == "__main__":
+    main()
