@@ -15,19 +15,21 @@ from urllib.request import Request, URLError, urlopen
 
 from bs4 import BeautifulSoup
 from dateutil.relativedelta import relativedelta
+from pytz import country_timezones, timezone, utc
+from pytz.exceptions import AmbiguousTimeError
 
 ADDRESS = "https://www.world-airport-codes.com/"
-COUNTRY_RE = re.compile(r".+\((\w\w)\).*")
 DT_INPUT_FORMAT = "%Y-%m-%d %H:%M:%S"
 DT_OUTPUT_FORMAT = "%Y-%m-%dT%H:%M"
-CSV_INPUT_FILE = "input_data.csv"
 AIRPORT_LIST_FILE = "airport_list.txt"
+CSV_INPUT_FILE = "input_data.csv"
 VALID_JOURNEYS_FILE = "valid_journeys.csv"
-NUMBER_OF_CANDIDATES_PER_SEARCH = 4
-NUMBER_OF_RETRIES = 5
-NUMBER_OF_JOURNEY_STARTS = 1000
 LENGTH_OF_COMPLETE_JOURNEY = 10
+NUMBER_OF_CANDIDATES_PER_SEARCH = 2
+NUMBER_OF_JOURNEY_STARTS = 1000
+NUMBER_OF_RETRIES = 5
 SIZE_OF_POOL = 50
+COUNTRY_RE = re.compile(r".+\((\w\w)\).*")
 
 FlightTuple = namedtuple("FlightTuple",
                          ['from_airport',
@@ -40,12 +42,22 @@ FlightTuple = namedtuple("FlightTuple",
 
 def construct_flight_data(values, dictionary_of_airports):
     """Fill namedtuple from line of CSV files."""
-    return FlightTuple(from_airport=values[0],
-                       from_country=dictionary_of_airports[values[0]],
-                       from_date=datetime.strptime(values[2], DT_INPUT_FORMAT),
-                       to_airport=values[1],
-                       to_country=dictionary_of_airports[values[1]],
-                       to_date=datetime.strptime(values[3], DT_INPUT_FORMAT))
+    try:
+        data = FlightTuple(from_airport=values[0],
+                           from_country=dictionary_of_airports[values[0]],
+                           from_date=set_local_date_time(
+                               values[2], dictionary_of_airports[values[0]]),
+                           to_airport=values[1],
+                           to_country=dictionary_of_airports[values[1]],
+                           to_date=set_local_date_time(
+                               values[3], dictionary_of_airports[values[1]]))
+    except KeyError:
+        # Time zone information about one of the countries is missing from database.
+        return None
+    except AmbiguousTimeError:
+        # Some none obvious problem with datatime conversion.
+        return None
+    return data
 
 
 def filter_younger_then_year(journey, list_of_flights):
@@ -57,7 +69,7 @@ def filter_younger_then_year(journey, list_of_flights):
                              journey[0].from_date).years < 1]
 
 
-def return_flight_data(flight_data):
+def return_flight_data_x(flight_data):
     """format flight data into readable format."""
     return "{};{};{};{};{}".format(
         flight_data.from_country,
@@ -67,7 +79,7 @@ def return_flight_data(flight_data):
         datetime.strftime(flight_data.to_date, DT_OUTPUT_FORMAT))
 
 
-def return_in_local_format(flight_data):
+def return_flight_data(flight_data):
     """format flight data into readable format."""
     return "{};{};{};{};{}".format(
         flight_data.from_country,
@@ -79,16 +91,30 @@ def return_in_local_format(flight_data):
 
 def get_local_date_time(datetime_input, country):
     """Convert UTC time into local time based on country. """
-    return datetime.strftime(datetime_input, DT_OUTPUT_FORMAT)
+    local = timezone(country_timezones(country)[0])
+    datetime_output = datetime_input.astimezone(local)
+    return datetime.strftime(datetime_output, DT_OUTPUT_FORMAT)
+
+
+def set_local_date_time(datetime_input, country):
+    """Convert UTC time into local time based on country. """
+    # creates country time zone object
+    local = timezone(country_timezones(country)[0])
+    # creates naive datetime object
+    naive = datetime.strptime(datetime_input, DT_INPUT_FORMAT)
+    # localize naive datetime object
+    local_dt = local.localize(naive, is_dst=None)
+    # return UTC datetime object
+    return local_dt.astimezone(utc)
 
 
 def write_journeys_to_file(list_of_journeys):
     """Write found journeys into file."""
     with open(VALID_JOURNEYS_FILE, "w") as file:
-        file.write(format_jouerneys_data(list_of_journeys))
+        file.write(format_journey_data(list_of_journeys))
 
 
-def format_jouerneys_data(list_of_journeys):
+def format_journey_data(list_of_journeys):
     """Create string containing all journeys data in printable format."""
     journeys_data = ""
     for index, journey in enumerate(list_of_journeys):
@@ -99,16 +125,14 @@ def format_jouerneys_data(list_of_journeys):
 
 def analyze_routes(flights):
     """analyze possible routes"""
-
     # Creation of these lists is little bit convoluted by it is necessary for
     # serialization for ProcessPoolExecutor.
     flights = down_sample(flights, NUMBER_OF_JOURNEY_STARTS)
     journeys = [list([flight]) for flight in flights]
-    flights_list = [flights for i in range(len(flights))]
+    flights_list = [flights for _ in range(len(flights))]
     args = list(zip(journeys, flights_list))
 
-    possible_journeys = []
-    with  ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor() as executor:
         possible_journeys = list(executor.map(find_route, args))
 
     return possible_journeys
@@ -116,12 +140,13 @@ def analyze_routes(flights):
 
 def find_route(args):
     """Recursive function investigates potential journey."""
-    if len(args[0]) == LENGTH_OF_COMPLETE_JOURNEY - 1:
-        return validate_journey(args[0], args[1])
+    journey, flights = args
+    if len(journey) == LENGTH_OF_COMPLETE_JOURNEY - 1:
+        return validate_journey(journey, flights)
     else:
         journeys = []
-        for candidate in filter_candidates(args[0], args[1]):
-            journeys += find_route((extend(args[0], candidate), args[1]))
+        for candidate in filter_candidates(journey, flights):
+            journeys += find_route((extend(journey, candidate), flights))
         return journeys
 
 
@@ -132,7 +157,6 @@ def validate_journey(journey, list_of_flights):
                   if candidate.from_date > journey[-1].to_date
                   # Select flight leaving from the country that last flight in journey arrived.
                   and candidate.from_country == journey[-1].to_country
-                  and candidate.to_country != journey[-1].from_country
                   # Select flights that arrive in country from which the journey began.
                   and candidate.to_country == journey[0].from_country
                   # Select flights that arrive sooner then year (+-24 hours) after first flight.
@@ -158,7 +182,6 @@ def filter_candidates(journey, list_of_flights):
                   and candidate.to_country not in [flight.from_country for flight in journey]
                   # Select flight leaving from the country that last flight in journey arrived.
                   and candidate.from_country == journey[-1].to_country
-                  and candidate.to_country != journey[-1].from_country
                   # Select flights that arrive sooner then year (+-24 hours) after first flight.
                   and relativedelta(candidate.to_date - timedelta(days=1),
                                     journey[0].from_date).years < 1]
@@ -167,12 +190,10 @@ def filter_candidates(journey, list_of_flights):
     return down_sample(candidates, NUMBER_OF_CANDIDATES_PER_SEARCH)
 
 
-def filter_out_invalid_flights(flights):
+def select_appropriate_flights(flights):
     """Flights that start and end in the same country are no valid."""
-    print("original size: %s" % len(flights))
     valid_flights = [flight for flight in flights
                      if flight.from_country != flight.to_country]
-    print("filtered size: %s" % len(valid_flights))
     return valid_flights
 
 
@@ -184,7 +205,6 @@ def down_sample(list_input, k):
     else:
         # down sample list_input to k equidistant items
         return [list_input[i] for i in range(0, int(length/k)*k, int(length/k))]
-
 
 
 def get_list_of_airports():
@@ -209,10 +229,9 @@ def get_list_of_flights(dictionary_of_airports):
         flights_reader = csv.reader(csv_file, delimiter=";")
         next(flights_reader, None)  # skip header
         for row in flights_reader:
-            try:
-                list_of_flights.append(construct_flight_data(row, dictionary_of_airports))
-            except KeyError:
-                pass
+            flight_data = construct_flight_data(row, dictionary_of_airports)
+            if flight_data:
+                list_of_flights.append(flight_data)
 
     return list_of_flights
 
@@ -223,7 +242,6 @@ def get_dictionary_of_airports(list_of_airports):
     Because the scrapping from web takes a long time. The result is saved
     to file and read on the next try.
     """
-    print("Gathering information about %s airports" % len(list_of_airports))
     dictionary_of_airports = {}
     # if there is no file with Airport countries
     if not os.path.isfile(AIRPORT_LIST_FILE):
@@ -250,11 +268,10 @@ def get_airport_country(airport):
     """Fetch airport info from www.world-airport-codes.com."""
     req = Request(compose_request(airport), headers={'User-Agent': "kiwi project"})
     response = send_request(req, airport)
-    country_code = parse_country_code(response, airport)
+    country_code = parse_country_code(response)
     if country_code:
-        return (airport, country_code)
+        return airport, country_code
     else:
-        print("Couldn't find country for '%s' airport" % airport)
         return None
 
 
@@ -282,7 +299,7 @@ def compose_request(airport):
     return "{}search/?s={}".format(ADDRESS, airport.lower())
 
 
-def parse_country_code(response, airport):
+def parse_country_code(response):
     """returns code of country"""
     try:
         soup = BeautifulSoup(response, "html.parser")
@@ -298,10 +315,6 @@ def parse_country_code(response, airport):
         code = None
     except IndexError:
         code = None
-    except Exception as error:
-        print("Error during parsing of response for airport '%s': %s" % (
-            airport, error))
-        code = None
     return code
 
 
@@ -312,15 +325,23 @@ def length_of_journey(journey):
 
 def main():
     """main function"""
+
+    # creates list of all found airports
     airports = get_list_of_airports()
-
+    # creates dictionary with countires of individual airports
     airport_countries = get_dictionary_of_airports(airports)
+    # creates list of flights
+    list_of_flights = get_list_of_flights(airport_countries)
+    # selects only those flights that fly into different country
+    valid_flights = select_appropriate_flights(list_of_flights)
 
-    flights = sorted(filter_out_invalid_flights(get_list_of_flights(airport_countries)),
+    flights = sorted(valid_flights,
                      key=operator.attrgetter('from_date'))
 
+    # list of valid flight journeys in nested list
     results = analyze_routes(flights)
 
+    # extracting of valid flights into simple list
     journeys = []
     for list_of_journeys in results:
         if len(list_of_journeys) > 0:
@@ -330,10 +351,11 @@ def main():
     journeys = sorted(journeys,
                       key=length_of_journey)
 
+    # saves found journeys into file
     write_journeys_to_file(journeys)
 
-    # print first 100 journeys
-    print(format_jouerneys_data(journeys)[:100])
+    # prints found journeys into file
+    print(format_journey_data(journeys))
 
 
 if __name__ == "__main__":
