@@ -6,7 +6,7 @@ from output_processing import process_journeys
 from scrapping import get_flight_information
 
 
-def main():
+def app():
     """main function"""
     flights = get_flight_information()
     journeys = analyze_routes(flights)
@@ -14,4 +14,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    app()
