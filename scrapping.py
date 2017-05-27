@@ -24,6 +24,17 @@ SIZE_OF_POOL = 50
 FlightTuple = namedtuple("FlightTuple", [
     'from_airport', 'from_country', 'from_date', 'to_airport', 'to_country', 'to_date'])
 
+def get_flight_information():
+    """gathers information about flights"""
+    airports = get_list_of_airports()
+    # creates dictionary with countires of individual airports
+    airport_countries = get_dictionary_of_airports(airports)
+    # creates list of flights
+    list_of_flights = get_list_of_flights(airport_countries)
+    # selects only those flights that fly into different country
+    valid_flights = select_appropriate_flights(list_of_flights)
+
+    return sorted(valid_flights, key=operator.attrgetter('from_date'))
 
 def get_list_of_airports():
     """get list of airports from input data file."""
@@ -91,8 +102,6 @@ def get_airport_country(airport):
     country_code = parse_country_code(response)
     if country_code:
         return airport, country_code
-    else:
-        return None
 
 
 def get_dictionary_of_airports(list_of_airports):
@@ -178,16 +187,3 @@ def select_appropriate_flights(flights):
         if flight.from_country != flight.to_country
     ]
     return valid_flights
-
-
-def get_flight_information():
-    """gathers information about flights"""
-    airports = get_list_of_airports()
-    # creates dictionary with countires of individual airports
-    airport_countries = get_dictionary_of_airports(airports)
-    # creates list of flights
-    list_of_flights = get_list_of_flights(airport_countries)
-    # selects only those flights that fly into different country
-    valid_flights = select_appropriate_flights(list_of_flights)
-
-    return sorted(valid_flights, key=operator.attrgetter('from_date'))
